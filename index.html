@@ -36,6 +36,7 @@ h2{font-size:17px;margin:22px 0 10px}
 button{font:inherit;color:inherit;cursor:pointer}
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--lec);outline-offset:2px}
 
+.sync{display:flex;justify-content:flex-end;margin-bottom:8px}.sync .pill{height:32px;font-size:13px;padding:0 12px}
 .head{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-bottom:6px}
 .datenav{display:flex;gap:6px}
 .ic{width:40px;height:40px;border:1px solid var(--line);background:var(--paper);border-radius:10px;font-size:18px;display:grid;place-items:center}
@@ -116,10 +117,11 @@ const ampm=t=>mins(t)<720?'ص':'م';
 const dlabel=s=>{const d=parse(s);return `${DAYS[d.getDay()]} ${d.getDate()}/${d.getMonth()+1}`};
 
 function load(){
-  try{const r=localStorage.getItem(KEY);if(r){const o=JSON.parse(r);return {classes:o.classes||[],study:o.study||[],log:o.log||[]}}}catch(e){}
-  return {classes:[],study:[],log:[]};
+  try{const r=localStorage.getItem(KEY);if(r){const o=JSON.parse(r);return {classes:o.classes||[],study:o.study||[],log:o.log||[],updatedAt:o.updatedAt||0}}}catch(e){}
+  return {classes:[],study:[],log:[],updatedAt:0};
 }
-function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
+function persist(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
+function save(){S.updatedAt=Date.now();persist();if(window.cloud)window.cloud.push(S)}
 
 let S=load();
 let tab='today';
@@ -128,6 +130,50 @@ let q='',courseFilter='';
 
 // ---------- PWA ----------
 if("serviceWorker" in navigator){window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}))}
+
+// ---------- sync ----------
+let accountOpen=false;
+function normalize(o){return {classes:o.classes||[],study:o.study||[],log:o.log||[],updatedAt:o.updatedAt||0}}
+function mergeStates(a,b){
+  const u=(x,y)=>{const m=new Map();[...x,...y].forEach(i=>{const p=m.get(i.id);m.set(i.id,p?{...p,...i,...((p.done||i.done)?{done:{...p.done,...i.done}}:{})}:i)});return [...m.values()]};
+  return {classes:u(a.classes,b.classes),study:u(a.study,b.study),log:u(a.log,b.log),updatedAt:Date.now()};
+}
+window.applyRemote=function(r,uid){
+  const lk=KEY+'-linked';let linked=false;
+  try{linked=localStorage.getItem(lk)===uid}catch(e){}
+  const mark=()=>{try{localStorage.setItem(lk,uid)}catch(e){}};
+  const has=S.classes.length||S.study.length||S.log.length;
+  if(!r){mark();if(has){S.updatedAt=S.updatedAt||Date.now();persist();window.cloud.push(S,true)}return}
+  if(!linked){S=mergeStates(S,normalize(r));persist();mark();window.cloud.push(S,true);if(!$('#modal').innerHTML)render();return}
+  const rt=r.updatedAt||0,lt=S.updatedAt||0;
+  if(rt>lt){S=normalize(r);persist();if(!$('#modal').innerHTML)render()}
+  else if(lt>rt){window.cloud.push(S,true)}
+};
+window.onCloudState=function(){
+  if(accountOpen&&window.cloud.user){accountOpen=false;$('#modal').innerHTML=''}
+  if(!$('#modal').innerHTML)render();
+};
+function syncPill(){
+  const c=window.cloud;let t='☁ مزامنة';
+  if(c&&c.configured){t=c.user?(c.status==='error'?'☁ مشكلة في المزامنة':'☁ متزامن ✓'):'☁ سجّل دخول'}
+  return `<div class="sync"><button class="pill" data-a="account">${t}</button></div>`;
+}
+function errAlert(e){
+  const m={'auth/invalid-credential':'الإيميل أو الباسورد غلط.','auth/wrong-password':'الباسورد غلط.','auth/user-not-found':'مفيش حساب بالإيميل ده.','auth/email-already-in-use':'الإيميل ده مسجل قبل كده.','auth/weak-password':'الباسورد لازم يكون 6 حروف على الأقل.','auth/invalid-email':'الإيميل مش صح.','auth/missing-password':'اكتب الباسورد.','auth/unauthorized-domain':'الدومين ده مش مضاف في Firebase (Authorized domains).','auth/network-request-failed':'مفيش نت.'};
+  const code=e&&e.code;if(code==='auth/popup-closed-by-user'||code==='auth/cancelled-popup-request')return;
+  alert(m[code]||('حصلت مشكلة: '+(code||e)));
+}
+function accountSheet(){
+  const c=window.cloud||{};accountOpen=true;
+  if(!c.configured){sheet('المزامنة','<div class="sub" style="margin-top:8px">المزامنة لسه ما اتفعلتش. املا ملف <b dir="ltr">firebase-config.js</b> وارفعه على GitHub.</div>',()=>'skip',null,'تمام');return}
+  if(c.user){sheet('حسابك',`<div class="card" style="margin-top:10px;direction:ltr;text-align:left">${esc(c.user.email||'')}</div><div class="sub" style="margin-top:8px">${c.status==='error'?'في مشكلة في الاتصال بالسيرفر.':'بياناتك بتتزامن تلقائي مع كل أجهزتك.'}</div><div class="row"><button class="btn danger" data-a="g-out" style="flex:none">تسجيل خروج</button></div>`,()=>'skip',null,'تمام');return}
+  sheet('تسجيل الدخول',`<div class="sub" style="margin-top:6px">سجّل دخول بنفس الحساب على كل أجهزتك.</div>
+    <label>الإيميل</label><input id="a-e" type="email" autocomplete="email" dir="ltr">
+    <label>الباسورد</label><input id="a-p" type="password" autocomplete="current-password" dir="ltr">
+    <div class="row" style="margin-top:12px"><button class="btn alt" data-a="g-signup" style="flex:none">حساب جديد</button><button class="btn alt" data-a="g-reset" style="flex:none">نسيت الباسورد</button></div>
+    <div class="row" style="margin-top:8px"><button class="btn alt" data-a="g-google" style="flex:1">دخول بحساب Google</button></div>`,
+    ()=>{window.cloud.signInEmail($('#a-e').value.trim(),$('#a-p').value,false).catch(errAlert);return false},null,'دخول');
+}
 
 // ---------- data logic ----------
 function eventsFor(dateIso){
@@ -157,7 +203,7 @@ const NAV=[['today','النهاردة'],['fixed','الجدول'],['study','ال�
 
 function render(){
   $('#nav').innerHTML=NAV.map(([k,t])=>`<button class="${tab===k?'on':''}" data-a="tab" data-v="${k}" aria-label="${t}">${ICONS[k==='fixed'?'fixed':k]}<span>${t}</span></button>`).join('');
-  $('#app').innerHTML=({today:vToday,fixed:vFixed,study:vStudy,log:vLog})[tab]();
+  $('#app').innerHTML=syncPill()+({today:vToday,fixed:vFixed,study:vStudy,log:vLog})[tab]();
 }
 
 function evCard(e,isToday,nowM,all){
@@ -254,11 +300,11 @@ function sheet(title,body,onSave,onDelete,saveLabel='حفظ'){
     <div class="row"><button class="btn" id="sv">${saveLabel}</button>${onDelete?'<button class="btn danger" id="dl">مسح</button>':''}<button class="btn alt" id="cn">إلغاء</button></div></div></div>`;
   $('#cn').onclick=closeSheet;
   $('#ov').onclick=e=>{if(e.target.id==='ov')closeSheet()};
-  $('#sv').onclick=()=>{if(onSave()!==false)closeSheet()};
-  if(onDelete)$('#dl').onclick=()=>{if(confirm('متأكد إنك عايز تمسح؟')){onDelete();closeSheet()}};
+  $('#sv').onclick=()=>{const r=onSave();if(r==='skip'){closeSheet();return}if(r!==false){save();closeSheet()}};
+  if(onDelete)$('#dl').onclick=()=>{if(confirm('متأكد إنك عايز تمسح؟')){onDelete();save();closeSheet()}};
   document.querySelectorAll('.chips[data-multi] .chip').forEach(c=>c.onclick=()=>c.classList.toggle('on'));
 }
-function closeSheet(){$('#modal').innerHTML='';save();render()}
+function closeSheet(){accountOpen=false;$('#modal').innerHTML='';render()}
 function dayChips(sel){return `<div class="chips" data-multi id="days">${ORDER.map(d=>`<button type="button" class="chip ${sel.includes(d)?'on':''}" data-d="${d}">${DAYS[d]}</button>`).join('')}</div>`}
 const pickedDays=()=>[...document.querySelectorAll('#days .chip.on')].map(c=>+c.dataset.d);
 const names=()=>`<datalist id="nm">${courseNames().map(n=>`<option value="${esc(n)}">`).join('')}</datalist>`;
@@ -325,7 +371,7 @@ function backup(){
     <textarea id="bk" spellcheck="false">${esc(JSON.stringify(S))}</textarea>`,
     ()=>{
       const v=$('#bk').value.trim();
-      if(v===JSON.stringify(S))return true;
+      if(v===JSON.stringify(S))return 'skip';
       try{const o=JSON.parse(v);if(!o||!Array.isArray(o.classes)||!Array.isArray(o.study)||!Array.isArray(o.log))throw 0;
         if(!confirm('ده هيستبدل كل البيانات الحالية. كمّل؟'))return false;S=o}catch(e){alert('الكود مش سليم.');return false}
     },null,'استرجاع / تم');
@@ -351,12 +397,55 @@ document.addEventListener('click',e=>{
   else if(a==='del-log'){S.log=S.log.filter(l=>l.id!==v);save();render()}
   else if(a==='cf'){courseFilter=v;render()}
   else if(a==='backup')backup();
+  else if(a==='account')accountSheet();
+  else if(a==='g-google')window.cloud.google().catch(errAlert);
+  else if(a==='g-signup')window.cloud.signInEmail($('#a-e').value.trim(),$('#a-p').value,true).catch(errAlert);
+  else if(a==='g-reset'){const m=$('#a-e').value.trim();if(!m){alert('اكتب الإيميل الأول.');return}window.cloud.reset(m).then(()=>alert('بعتنالك لينك لتغيير الباسورد على الإيميل.')).catch(errAlert)}
+  else if(a==='g-out'){window.cloud.out().then(()=>closeSheet())}
 });
 document.addEventListener('input',e=>{
   if(e.target.id==='q'){q=e.target.value;const p=e.target.selectionStart;render();const n=$('#q');n.focus();n.setSelectionRange(p,p)}
 });
 setInterval(()=>{if(tab==='today'&&!$('#modal').innerHTML&&document.activeElement.tagName!=='INPUT')render()},60000);
 render();
+</script>
+<script type="module">
+import {firebaseConfig as cfg} from "./firebase-config.js";
+const configured=!!(cfg&&cfg.apiKey&&!String(cfg.apiKey).startsWith("PASTE"));
+const cloud=window.cloud={configured,user:null,status:'out',push(){},google:async()=>{},signInEmail:async()=>{},reset:async()=>{},out:async()=>{}};
+const notify=()=>window.onCloudState&&window.onCloudState();
+if(configured){
+  try{
+    const V="10.12.2",B="https://www.gstatic.com/firebasejs/"+V+"/";
+    const [{initializeApp},A,F]=await Promise.all([import(B+"firebase-app.js"),import(B+"firebase-auth.js"),import(B+"firebase-firestore.js")]);
+    const app=initializeApp(cfg),auth=A.getAuth(app),db=F.getFirestore(app);
+    let unsub=null,timer=null;
+    cloud.google=()=>A.signInWithPopup(auth,new A.GoogleAuthProvider());
+    cloud.signInEmail=(e,p,create)=>create?A.createUserWithEmailAndPassword(auth,e,p):A.signInWithEmailAndPassword(auth,e,p);
+    cloud.reset=e=>A.sendPasswordResetEmail(auth,e);
+    cloud.out=()=>A.signOut(auth);
+    cloud.push=(state,now)=>{
+      if(!cloud.user)return;
+      clearTimeout(timer);
+      const go=()=>F.setDoc(F.doc(db,"users",cloud.user.uid),{data:JSON.stringify(state),updatedAt:state.updatedAt||0})
+        .then(()=>{if(cloud.status!=='ok'){cloud.status='ok';notify()}}).catch(()=>{cloud.status='error';notify()});
+      if(now)go();else timer=setTimeout(go,500);
+    };
+    A.onAuthStateChanged(auth,u=>{
+      if(unsub){unsub();unsub=null}
+      cloud.user=u;cloud.status=u?'ok':'out';
+      if(u){
+        unsub=F.onSnapshot(F.doc(db,"users",u.uid),snap=>{
+          if(snap.metadata.hasPendingWrites)return;
+          cloud.status='ok';
+          try{window.applyRemote(snap.exists()?JSON.parse(snap.data().data):null,u.uid)}catch(e){}
+          notify();
+        },()=>{cloud.status='error';notify()});
+      }
+      notify();
+    });
+  }catch(e){cloud.status='error';notify()}
+}else notify();
 </script>
 </body>
 </html>
